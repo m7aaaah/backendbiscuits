@@ -1,0 +1,602 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+
+// 🔥 1. استيراد مكتبة الأدمن (God Mode) 🔥
+const admin = require("firebase-admin");
+
+// 🚨 2. قراءة المفتاح السري بذكاء وأمان 🚨
+let serviceAccount;
+
+console.log("🔍 Available ENV Variables:", Object.keys(process.env));
+
+if (process.env.FIREBASE_CREDENTIALS) {
+  try {
+    serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+    console.log("✅ Loaded Firebase Credentials from Railway Variables");
+  } catch (err) {
+    console.error("❌ Error parsing FIREBASE_CREDENTIALS in Railway:", err);
+  }
+} else {
+  try {
+    serviceAccount = require("./serviceAccountKey.json");
+    console.log("✅ Loaded Firebase Credentials from local JSON file");
+  } catch (err) {
+    console.error("❌ Local serviceAccountKey.json not found!");
+  }
+}
+
+// 🔥 3. تهيئة فايربيز بشكل آمن 🔥
+let db = null;
+if (serviceAccount) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  db = admin.firestore();
+  console.log("🔥 Firebase Admin Initialized Successfully!");
+} else {
+  console.error("🚨 CRITICAL: Firebase Admin failed to initialize. Server will run without DB cleanup.");
+}
+
+const app = express();
+app.use(cors()); 
+
+app.get('/', (req, res) => {
+  res.send('🍪 Biscuits Server is Alive and Kicking! 🚀');
+});
+
+const server = http.createServer(app);
+
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+
+const roomStrokes = {}; 
+const wwRooms = {}; 
+const ccRooms = {}; 
+const bcRooms = {}; 
+
+const socketUsers = {}; 
+const disconnectTimers = {}; 
+
+const countriesDB = [
+  "اثيوبيا", "اذربيجان", "الارجنتين", "الاردن", "ارمينيا", "اريتريا", "اسبانيا", "استراليا", "استونيا", 
+  "افغانستان", "الاكوادور", "البانيا", "المانيا", "الامارات", "امريكا", "الولايات المتحدة", "انتيغوا وباربودا", 
+  "اندورا", "اندونيسيا", "انغولا", "اوروغواي", "اوزبكستان", "اوغندا", "اوكرانيا", "ايران", "ايرلندا", 
+  "ايسلندا", "ايطاليا", "باكستان", "بالاو", "البحرين", "البرازيل", "بربادوس", "البرتغال", "بروناي", "بريطانيا", "انجلترا", 
+  "بلجيكا", "بلغاريا", "بليز", "بنغلاديش", "بنما", "بنين", "بوتان", "بوتسوانا", "بوركينا فاسو", 
+  "بوروندي", "البوسنة والهرسك", "بولندا", "بوليفيا", "بيرو", "بيلاروسيا", "تايوان", "تايلاند", 
+  "تركمانستان", "تركيا", "ترينيداد وتوباغو", "تشاد", "التشيك", "تشيلي", "تنزانيا", "توجو", "تونس", 
+  "توفالو", "تونغا", "تيمور الشرقية", "جامايكا", "الجزائر", "جزر البهاما", "جزر القمر", "جزر المالديف", "جزر سليمان", "جزر مارشال", 
+  "جنوب إفريقيا", "جنوب السودان", "جورجيا", "جيبوتي", "الدنمارك", "دومينيكا", "الدومينيكان", 
+  "رواندا", "روسيا", "رومانيا", "زامبيا", "زيمبابوي", "ساحل العاج", "ساموا", "سان مارينو", "سانت فنسنت", "سانت كيتس", "سانت لوسيا", "ساو تومي", 
+  "سريلانكا", "السعودية", "السلفادور", "سلوفاكيا", "سلوفينيا", "سنغافورة", "السنغال", "سوريا", 
+  "سورينام", "السويد", "سويسرا", "سيراليون", "سيشل", "السودان", "صربيا", "الصومال", "الصين", 
+  "طاجيكستان", "العراق", "عمان", "الغابون", "غامبيا", "غانا", "غرينادا", "غواتيمالا", "غيانا", 
+  "غينيا", "غينيا الاستوائية", "غينيا بيساو", "فاتيكان", "فانواتو", "فرنسا", "الفلبين", "فلسطين", "فنزويلا", "فنلندا", "فيتنام", "فيجي", 
+  "قبرص", "قطر", "قيرغيزستان", "كازاخستان", "الكاميرون", "كرواتيا", "كمبوديا", "كندا", "كوبا", 
+  "كوريا الجنوبية", "كوريا الشمالية", "كوستاريكا", "كوسوفو", "كولومبيا", "الكونغو", "الكويت", 
+  "كيريباتي", "كينيا", "لاتفيا", "لاوس", "لبنان", "لوكسمبورغ", "ليبيا", "ليبيريا", "ليتوانيا", 
+  "ليختنشتاين", "ليسوتو", "مالاوي", "مالطا", "مالي", "ماليزيا", "المجر", "مدغشقر", "مصر", "المغرب", "مقدونيا", "المكسيك", 
+  "موريتانيا", "موريشيوس", "موزمبيق", "مولدوفا", "موناكو", "مونتينيغرو", "ميانمار", "ميكرونيزيا", 
+  "ناميبيا", "ناورو", "النرويج", "النمسا", "نيبال", "النيجر", "نيجيريا", "نيكاراغوا", "نيوزيلندا", 
+  "هايتي", "الهند", "هندوراس", "هولندا", "اليابان", "اليمن", "اليونان"
+];
+
+const BISCUIT_WORDS = [
+  "شبكة", "عيش", "عجلة", "حساب", "رصيد", "نور", "عين", "شاحن", "بحر", "مطب",
+  "جزر", "جبنة", "كيك", "حلة", "ديك", "دور", "سلك", "شريط", "حكم", "محطة",
+  "كورة", "ضربة", "حجز", "وصل", "فرقة", "بطل", "سلطة", "ورقة", "شمسية", "قوس",
+  "مقص", "كوبري", "طاولة", "مسطرة", "ملف", "كارت", "قضية", "محضر", "ختم", "بصمة",
+  "فاتورة", "روشتة", "وصلة", "فيشة", "رخصة", "تصريح", "شهادة", "نتيجة", "هدف", "نقطة",
+  "كشري", "طعمية", "ملوخية", "محشي", "حواوشي", "بسبوسة", "مانجة", "شاي", "قهوة", "لب",
+  "كوارع", "ممبار", "فول", "بطيخ", "قصب", "سحلب", "تمر", "كنافة", "عرقسوس", "كبده",
+  "طحينة", "شاورما", "باتيه", "بقسماط", "قرص", "لبن", "زبادي", "عسل", "كفتة", "حمص",
+  "بصل", "توم", "فلفل", "شطة", "كمون", "خل", "زيت", "زبدة", "سمنة", "قشطة",
+  "رنجة", "فسيخ", "تونة", "جمبري", "سبيط", "مكرونة", "رز", "فينو", "كريب", "وافل",
+  "توكتوك", "ميكروباص", "كشك", "رصيف", "إشارة", "يافطة", "موقف", "كمين", "نفق",
+  "تاكسي", "مترو", "قطر", "تذكرة", "أجرة", "موتوسيكل", "فيسبا", "مزلقان", "ناصية", "حارة",
+  "ميدان", "قهوة", "كافيه", "مطعم", "محل", "سوبرماركت", "مول", "سينما", "مسرح", "ملاهي",
+  "جنينة", "شط", "شمسية", "بنزينة", "جراج", "مستشفى", "صيدلية", "بنك", "بوسطة", "قسم", "نادي",
+  "شبشب", "غسالة", "ريموت", "مشترك", "تلاجة", "مروحة", "بوتاجاز", "سجادة", "بلكونة",
+  "شباك", "باب", "سرير", "كنبة", "دولاب", "مخدة", "بطانية", "حنفية", "دش", "جردل",
+  "طفاية", "ولاعة", "شمعة", "لمبة", "نجفة", "مشاية", "ستاير", "مرتبة", "لحاف", "ملاية",
+  "فوطة", "صابونة", "ليفة", "شامبو", "معجون", "فرشة", "مشط", "مقص", "قصافة", "إبرة",
+  "خيط", "زرار", "سوستة", "مكواة", "طبلية", "صينية", "كوباية", "مج", "طبق", "معلقة",
+  "قميص", "تيشيرت", "بنطلون", "شورت", "جيبة", "فستان", "عباية", "طرحة", "جلابية", "بيجامة",
+  "شراب", "جزمة", "كوتشي", "صندل", "حزام", "كرافتة", "طاقية", "كاب", "كوفية", "جوانتي",
+  "نضارة", "ساعة", "حظاظة", "خاتم", "دبلة", "سلسلة", "حلق", "غويشة", "محفظة", "شنطة",
+  "عريس", "عروسة", "حماة", "بواب", "سواق", "تباع", "عمدة", "صنايعي", "دكتور", "ظابط",
+  "محامي", "مدرس", "حلاق", "مكواجي", "سباك", "كهربائي", "نجار", "بياع", "زبون", "جار",
+  "قاضي", "عسكري", "حرامي", "بلطجي", "شيخ", "سايس", "كمسري", "جزار", "بقال", "خباز",
+  "ترزي", "نقاش", "ميكانيكي", "طيار", "قبطان", "بحار", "غواص", "فرح", "عزاء", "عيدية",
+  "أسد", "قطة", "كلب", "حمار", "حصان", "فرخة", "ديب", "فار", "تمساح", "قرد",
+  "غزالة", "حمامة", "غراب", "نسر", "عصفورة", "بقرة", "جاموسة", "خروف", "معزة", "جمل",
+  "قمر", "نجوم", "سما", "سحاب", "مطر", "هوا", "تراب", "طينة", "رملة", "زلط",
+  "صخرة", "جبل", "بحر", "نهر", "ترعة", "جزيرة", "شجرة", "وردة", "نخلة", "صحرا",
+  "موبايل", "سماعة", "مايك", "شاشة", "كيبورد", "ماوس", "لابتوب", "كمبيوتر", "تابلت", "راوتر",
+  "باقة", "فلاشة", "ميموري", "كاميرا", "عدسة", "بطارية", "حجارة", "لعب", "كوتشينة", "دومينو"
+];
+
+function getNextAlivePlayerIndex(playersList, currentIndex) {
+  let nextIndex = (currentIndex + 1) % playersList.length;
+  let loops = 0;
+  while (playersList[nextIndex].strikes >= 3 && loops < playersList.length) {
+    nextIndex = (nextIndex + 1) % playersList.length;
+    loops++;
+  }
+  return nextIndex;
+}
+
+function checkWinCondition(room) {
+  const alivePlayers = Object.values(room.players).filter(p => p.strikes < 3);
+  if (alivePlayers.length === 1) {
+    room.status = 'final-result';
+    room.winner = alivePlayers[0];
+  }
+}
+
+async function cleanupFirebaseRoom(roomId, uid) {
+  if (!db) {
+    console.warn(`⚠️ Skipping Firebase cleanup for room ${roomId} (DB not initialized)`);
+    return;
+  }
+  try {
+    const roomRef = db.collection('rooms').doc(roomId);
+    const roomSnap = await roomRef.get();
+    
+    if (roomSnap.exists) {
+      const roomData = roomSnap.data();
+      const players = roomData.players || {};
+      
+      if (players[uid]) {
+        delete players[uid];
+      }
+
+      const remainingPlayers = Object.keys(players).length;
+
+      if (remainingPlayers === 0) {
+        await roomRef.delete();
+        console.log(`🧹 [CLEANUP] Deleted empty ghost room from Firebase: ${roomId}`);
+      } else {
+        await roomRef.update({
+          [`players.${uid}`]: admin.firestore.FieldValue.delete()
+        });
+        console.log(`🧹 [CLEANUP] Removed ghost player ${uid} from room ${roomId}`);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Firebase Cleanup Error:", error);
+  }
+}
+
+io.on('connection', (socket) => {
+  console.log(`🟢 Player connected: ${socket.id}`);
+
+  // ==========================================
+  // 🤡 نظام التحفيل والرياكشنات (Global Reactions)
+  // ==========================================
+  socket.on('send_reaction', ({ roomId, emoji }) => {
+    io.to(roomId).emit('receive_reaction', { emoji, uid: socket.id });
+  });
+
+  // ==========================================
+  // 🎨 لعبة ارسم وخمن
+  // ==========================================
+  socket.on('join_room', ({ roomId, uid }) => { 
+    socket.join(roomId); 
+    if (uid) {
+      socketUsers[socket.id] = { roomId, uid, gameType: 'graffiti' };
+      if (disconnectTimers[uid]) { 
+        clearTimeout(disconnectTimers[uid]); 
+        delete disconnectTimers[uid]; 
+        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+      }
+    }
+    if (roomStrokes[roomId]) socket.emit('load_board', roomStrokes[roomId]); 
+  });
+  socket.on('draw_line', (data) => { if (!data || !data.tool) return; if (!roomStrokes[data.roomId]) roomStrokes[data.roomId] = []; roomStrokes[data.roomId].push(data); socket.to(data.roomId).emit('draw_line', data); });
+  socket.on('clear_board', (roomId) => { roomStrokes[roomId] = []; socket.to(roomId).emit('clear_board'); });
+
+  // ==========================================
+  // ⚔️ لعبة الكلمة المختلفة (Word War)
+  // ==========================================
+  socket.on('ww_join', ({ roomId, uid, roomData }) => { 
+    socket.join(roomId); 
+    if (uid) {
+      socketUsers[socket.id] = { roomId, uid, gameType: 'ww' };
+      if (disconnectTimers[uid]) { 
+        clearTimeout(disconnectTimers[uid]); 
+        delete disconnectTimers[uid]; 
+        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+      }
+    }
+    if (!wwRooms[roomId]) wwRooms[roomId] = { ...roomData, currentRound: 1, currentPrompt: '' }; 
+    else wwRooms[roomId].players = { ...wwRooms[roomId].players, ...roomData.players }; 
+    io.to(roomId).emit('ww_state', wwRooms[roomId]); 
+  });
+  
+  socket.on('ww_start', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_submit', ({ roomId, uid, word }) => { let room = wwRooms[roomId]; if (room && room.players[uid]) { room.players[uid].currentWord = word; room.players[uid].isReady = true; const players = Object.values(room.players); if (players.every(p => p.isReady) && players.length > 1) room.status = 'clash'; io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_time_up', (roomId) => { let room = wwRooms[roomId]; if (room && room.status === 'writing') { room.status = 'clash'; io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_judge_word', ({ roomId, targetUid, status }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { room.players[targetUid].wordStatus = status; room.players[targetUid].roundScore = (status === 'accepted') ? 1 : 0; io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_next_round', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { Object.values(room.players).forEach(p => { p.score = (p.score || 0) + (p.roundScore || 0); }); if (room.currentRound >= room.totalRounds) { room.status = 'final-result'; } else { room.currentRound += 1; room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); } io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_kick_player', ({ roomId, targetUid }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('ww_state', room); } });
+  socket.on('ww_leave', ({ roomId, uid }) => {
+    let room = wwRooms[roomId];
+    if (room && room.players[uid]) {
+      delete room.players[uid];
+      const remainingUids = Object.keys(room.players);
+      if (remainingUids.length === 0) delete wwRooms[roomId];
+      else { if (room.hostId === uid) room.hostId = remainingUids[0]; io.to(roomId).emit('ww_state', room); }
+    }
+  });
+
+  // ==========================================
+  // 🌍 لعبة سلسلة الدول (Country Chain)
+  // ==========================================
+  socket.on('cc_join', ({ roomId, uid, roomData }) => {
+    socket.join(roomId);
+    if (uid) {
+        socketUsers[socket.id] = { roomId, uid, gameType: 'cc' }; 
+        if (disconnectTimers[uid]) { 
+          clearTimeout(disconnectTimers[uid]); 
+          delete disconnectTimers[uid]; 
+          io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+        }
+    }
+    if (!ccRooms[roomId]) {
+      ccRooms[roomId] = { ...roomData, currentWord: '', lastLetter: '', turnIndex: 0, status: 'lobby' };
+      Object.values(ccRooms[roomId].players).forEach(p => p.strikes = 0);
+    } else { ccRooms[roomId].players = { ...ccRooms[roomId].players, ...roomData.players }; }
+    io.to(roomId).emit('cc_state', ccRooms[roomId]);
+  });
+
+  socket.on('cc_start', (roomId) => { let room = ccRooms[roomId]; if (room) { room.status = 'playing'; room.currentWord = ''; room.lastLetter = ''; room.turnIndex = 0; io.to(roomId).emit('cc_state', room); } });
+  socket.on('cc_submit_letter', ({ roomId, uid, letter }) => { let room = ccRooms[roomId]; if (!room || room.status !== 'playing') return; room.currentWord += letter; room.lastLetter = letter; room.lastPlayerUid = uid; if (countriesDB.includes(room.currentWord)) { room.status = 'round_end'; room.roundResult = { reason: 'completed', word: room.currentWord, message: `تم تجميع كلمة (${room.currentWord})!` }; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); const nextIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); const trappedPlayer = playersList[nextIndex]; trappedPlayer.strikes += 1; room.roundResult.victim = trappedPlayer.name; checkWinCondition(room); } else { const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); room.turnIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } io.to(roomId).emit('cc_state', room); });
+  socket.on('cc_timeout', ({ roomId, currentUid }) => { let room = ccRooms[roomId]; if (!room || room.status !== 'playing') return; if (room.players[currentUid]) { room.players[currentUid].strikes += 1; room.status = 'round_end'; room.roundResult = { reason: 'timeout', word: room.currentWord || 'مفيش', message: 'الوقت خلص!', victim: room.players[currentUid].name }; checkWinCondition(room); io.to(roomId).emit('cc_state', room); } });
+  socket.on('cc_challenge', ({ roomId, challengerUid }) => { let room = ccRooms[roomId]; if (!room) return; room.status = 'challenged'; room.challengerUid = challengerUid; room.accusedUid = room.lastPlayerUid; io.to(roomId).emit('cc_state', room); });
+  socket.on('cc_declare_word', ({ roomId, declaredWord }) => { let room = ccRooms[roomId]; if (!room) return; room.declaredWord = declaredWord; if (room.hostId === room.accusedUid) { room.status = 'voting'; room.votes = { yes: 0, no: 0 }; } else { room.status = 'judging'; } io.to(roomId).emit('cc_state', room); });
+  socket.on('cc_judge', ({ roomId, isRealWord }) => { let room = ccRooms[roomId]; if (!room) return; room.status = 'round_end'; if (isRealWord) { room.players[room.challengerUid].strikes += 1; room.roundResult = { reason: 'challenge_failed', word: room.declaredWord, message: 'الكلمة طلعت بجد!', victim: room.players[room.challengerUid].name }; } else { room.players[room.accusedUid].strikes += 1; room.roundResult = { reason: 'challenge_success', word: room.declaredWord, message: 'المتهم كان بيهبد!', victim: room.players[room.accusedUid].name }; } checkWinCondition(room); io.to(roomId).emit('cc_state', room); });
+  socket.on('cc_vote', ({ roomId, vote }) => { let room = ccRooms[roomId]; if (!room) return; room.votes[vote] += 1; const alivePlayersCount = Object.values(room.players).filter(p => p.strikes < 3).length; if (room.votes.yes + room.votes.no >= alivePlayersCount - 1) { const isRealWord = room.votes.yes > room.votes.no; room.status = 'round_end'; if (isRealWord) { room.players[room.challengerUid].strikes += 1; room.roundResult = { reason: 'vote_failed', word: room.declaredWord, message: 'الأغلبية صدقت المتهم!', victim: room.players[room.challengerUid].name }; } else { room.players[room.accusedUid].strikes += 1; room.roundResult = { reason: 'vote_success', word: room.declaredWord, message: 'الأغلبية كدبت المتهم!', victim: room.players[room.accusedUid].name }; } checkWinCondition(room); } io.to(roomId).emit('cc_state', room); });
+  socket.on('cc_next_round', (roomId) => { let room = ccRooms[roomId]; if (room && room.status !== 'final-result') { room.status = 'playing'; room.currentWord = ''; room.lastLetter = ''; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); let victimIndex = playersList.findIndex(p => p.name === room.roundResult?.victim); if (victimIndex === -1 || playersList[victimIndex].strikes >= 3) { victimIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } room.turnIndex = victimIndex; io.to(roomId).emit('cc_state', room); } });
+  socket.on('cc_kick_player', ({ roomId, targetUid }) => { let room = ccRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('cc_state', room); } });
+  socket.on('cc_leave', ({ roomId, uid }) => {
+    let room = ccRooms[roomId];
+    if (room && room.players[uid]) {
+      if (room.status === 'lobby') {
+        delete room.players[uid];
+        const remainingUids = Object.keys(room.players);
+        if (remainingUids.length === 0) { delete ccRooms[roomId]; return; } 
+        else if (room.hostId === uid) { room.hostId = remainingUids[0]; }
+      } else {
+        room.players[uid].strikes = 3;
+        if (room.hostId === uid) {
+          const alivePlayers = Object.values(room.players).filter(p => p.strikes < 3 && p.uid !== uid);
+          if (alivePlayers.length > 0) room.hostId = alivePlayers[0].uid;
+        }
+        if (room.status === 'playing') {
+          const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid));
+          if (playersList[room.turnIndex]?.uid === uid) {
+            room.turnIndex = getNextAlivePlayerIndex(playersList, room.turnIndex);
+          }
+        }
+        checkWinCondition(room);
+      }
+      io.to(roomId).emit('cc_state', room);
+    }
+  });
+
+  // ==========================================
+  // 🍪 لعبة شفرة البسكوت (Biscuit Code)
+  // ==========================================
+  
+  socket.on('bc_join', ({ roomId, uid, roomData }) => {
+    socket.join(roomId);
+    if (uid) {
+      socketUsers[socket.id] = { roomId, uid, gameType: 'bc' };
+      if (disconnectTimers[uid]) { 
+        clearTimeout(disconnectTimers[uid]); 
+        delete disconnectTimers[uid]; 
+        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+      }
+    }
+    
+    if (!bcRooms[roomId]) {
+      bcRooms[roomId] = { ...roomData, status: 'lobby' };
+    } else {
+      const mergedPlayers = { ...roomData.players };
+      Object.keys(bcRooms[roomId].players).forEach(pUid => {
+        if (mergedPlayers[pUid]) {
+          mergedPlayers[pUid].team = bcRooms[roomId].players[pUid].team;
+          mergedPlayers[pUid].role = bcRooms[roomId].players[pUid].role;
+        }
+      });
+      bcRooms[roomId].players = mergedPlayers;
+    }
+    
+    io.to(roomId).emit('bc_state', bcRooms[roomId]);
+  });
+
+  socket.on('bc_selectRole', ({ roomId, uid, team, role }) => {
+    const room = bcRooms[roomId];
+    if (room && room.players[uid]) {
+      if (role === 'chef') {
+        Object.values(room.players).forEach(p => {
+          if (p.team === team && p.role === 'chef' && p.uid !== uid) {
+            p.role = 'taster';
+          }
+        });
+      }
+      room.players[uid].team = team;
+      room.players[uid].role = role;
+      io.to(roomId).emit('bc_state', room);
+    }
+  });
+
+  socket.on('bc_startGame', ({ roomId }) => {
+    const room = bcRooms[roomId];
+    if (!room) return;
+
+    let teamA = [];
+    let teamB = [];
+    let chefA = null;
+    let chefB = null;
+    let unassigned = [];
+
+    Object.values(room.players).forEach(p => {
+      if (p.team === 'teamA') {
+        teamA.push(p.uid);
+        if (p.role === 'chef') chefA = p.uid;
+      } else if (p.team === 'teamB') {
+        teamB.push(p.uid);
+        if (p.role === 'chef') chefB = p.uid;
+      } else {
+        unassigned.push(p.uid);
+      }
+    });
+
+    unassigned.forEach(uid => {
+      if (teamA.length <= teamB.length) {
+        teamA.push(uid);
+        room.players[uid].team = 'teamA';
+        room.players[uid].role = 'taster';
+      } else {
+        teamB.push(uid);
+        room.players[uid].team = 'teamB';
+        room.players[uid].role = 'taster';
+      }
+    });
+
+    if (!chefA && teamA.length > 0) {
+      chefA = teamA[0];
+      room.players[chefA].role = 'chef';
+    }
+    if (!chefB && teamB.length > 0) {
+      chefB = teamB[0];
+      room.players[chefB].role = 'chef';
+    }
+
+    const types = [
+      ...Array(9).fill('teamA'),
+      ...Array(8).fill('teamB'),
+      ...Array(7).fill('neutral'),
+      'burnt'
+    ].sort(() => 0.5 - Math.random());
+    
+    const shuffledWords = [...BISCUIT_WORDS].sort(() => 0.5 - Math.random()).slice(0, 25);
+    const cards = shuffledWords.map((word, index) => ({
+      id: index, word, type: types[index], isRevealed: false
+    }));
+
+    room.biscuitState = {
+      cards,
+      currentTurn: 'teamA',
+      winner: null,
+      activeClue: null,
+      guessesLeft: 0,
+      teamA,
+      teamB,
+      chefA, 
+      chefB,
+      teaA: true,
+      teaB: true
+    };
+    room.status = 'playing';
+
+    io.to(roomId).emit('bc_state', room);
+  });
+
+  socket.on('bc_sendClue', ({ roomId, word, count, uid }) => {
+    const room = bcRooms[roomId];
+    if (!room || !room.biscuitState) return;
+    
+    const state = room.biscuitState;
+    if ((state.currentTurn === 'teamA' && uid === state.chefA) || 
+        (state.currentTurn === 'teamB' && uid === state.chefB)) {
+      state.activeClue = { word, count };
+      state.guessesLeft = count + 1;
+      io.to(roomId).emit('bc_state', room);
+    }
+  });
+
+  socket.on('bc_armTea', ({ roomId, team }) => {
+    io.to(roomId).emit('bc_teaArmed', { team });
+  });
+
+  socket.on('bc_revealCard', ({ roomId, cardId, uid, useTea }) => {
+    const room = bcRooms[roomId];
+    if (!room || !room.biscuitState) return;
+    const state = room.biscuitState;
+
+    if (state.winner || !state.activeClue) return;
+
+    const isTeamA = state.teamA.includes(uid);
+    const isTeamB = state.teamB.includes(uid);
+    
+    if ((uid === state.chefA && state.teamA.length > 1) || 
+        (uid === state.chefB && state.teamB.length > 1)) return; 
+
+    if (state.currentTurn === 'teamA' && !isTeamA) return;
+    if (state.currentTurn === 'teamB' && !isTeamB) return;
+
+    const card = state.cards.find(c => c.id === cardId);
+    if (!card || card.isRevealed) return;
+
+    const myTeam = state.currentTurn;
+    const hasTea = myTeam === 'teamA' ? state.teaA : state.teaB;
+    const actuallyUsingTea = useTea && hasTea;
+
+    if (actuallyUsingTea) {
+      if (myTeam === 'teamA') state.teaA = false;
+      if (myTeam === 'teamB') state.teaB = false;
+    }
+
+    card.isRevealed = true;
+
+    if (card.type === 'burnt') {
+      if (actuallyUsingTea) {
+        state.currentTurn = state.currentTurn === 'teamA' ? 'teamB' : 'teamA';
+        state.activeClue = null;
+        state.guessesLeft = 0;
+      } else {
+        state.winner = state.currentTurn === 'teamA' ? 'teamB' : 'teamA';
+      }
+    } else {
+      const remA = state.cards.filter(c => c.type === 'teamA' && !c.isRevealed).length;
+      const remB = state.cards.filter(c => c.type === 'teamB' && !c.isRevealed).length;
+      
+      if (remA === 0) state.winner = 'teamA';
+      else if (remB === 0) state.winner = 'teamB';
+      else {
+        if (card.type !== state.currentTurn) {
+          state.currentTurn = state.currentTurn === 'teamA' ? 'teamB' : 'teamA';
+          state.activeClue = null;
+          state.guessesLeft = 0;
+        } else {
+          state.guessesLeft -= 1;
+          if (state.guessesLeft <= 0) {
+            state.currentTurn = state.currentTurn === 'teamA' ? 'teamB' : 'teamA';
+            state.activeClue = null;
+            state.guessesLeft = 0;
+          }
+        }
+      }
+    }
+    io.to(roomId).emit('bc_state', room);
+  });
+
+  socket.on('bc_endTurn', ({ roomId, uid }) => {
+    const room = bcRooms[roomId];
+    if (!room || !room.biscuitState) return;
+    const state = room.biscuitState;
+    
+    if ((uid === state.chefA && state.teamA.length > 1) || 
+        (uid === state.chefB && state.teamB.length > 1)) return;
+
+    if (state.currentTurn === 'teamA' && !state.teamA.includes(uid)) return;
+    if (state.currentTurn === 'teamB' && !state.teamB.includes(uid)) return;
+
+    state.currentTurn = state.currentTurn === 'teamA' ? 'teamB' : 'teamA';
+    state.activeClue = null;
+    state.guessesLeft = 0;
+    io.to(roomId).emit('bc_state', room);
+  });
+
+  socket.on('bc_kick_player', ({ roomId, targetUid }) => {
+    let room = bcRooms[roomId];
+    if (room && room.players[targetUid]) {
+      delete room.players[targetUid];
+      io.to(roomId).emit('bc_state', room);
+    }
+  });
+
+  socket.on('bc_leave', ({ roomId, uid }) => {
+    let room = bcRooms[roomId];
+    if (room && room.players[uid]) {
+      delete room.players[uid];
+      const remainingUids = Object.keys(room.players);
+      if (remainingUids.length === 0) delete bcRooms[roomId];
+      else {
+        if (room.hostId === uid) room.hostId = remainingUids[0];
+        io.to(roomId).emit('bc_state', room);
+      }
+    }
+  });
+
+  // ==========================================
+  // 🔴 معالجة فصل الاتصال (Disconnect Handling)
+  // ==========================================
+  socket.on('disconnect', () => {
+    console.log(`🔴 Player disconnected: ${socket.id}`);
+    const user = socketUsers[socket.id];
+    
+    if (user) {
+      // إرسال إشعار للمتبقيين في الروم إن اللاعب فصل وبدء العداد التنازلي (30 ثانية)
+      io.to(user.roomId).emit('player_offline', { uid: user.uid, time: 30 });
+
+      disconnectTimers[user.uid] = setTimeout(() => {
+        // تنظيف Country Chain
+        if (user.gameType === 'cc') {
+          let room = ccRooms[user.roomId];
+          if (room && room.players[user.uid]) {
+            if (room.status === 'lobby') {
+              delete room.players[user.uid];
+              const remainingUids = Object.keys(room.players);
+              if (remainingUids.length === 0) delete ccRooms[user.roomId];
+              else if (room.hostId === user.uid) room.hostId = remainingUids[0];
+            } else {
+              room.players[user.uid].strikes = 3;
+              if (room.hostId === user.uid) {
+                const alivePlayers = Object.values(room.players).filter(p => p.strikes < 3 && p.uid !== user.uid);
+                if (alivePlayers.length > 0) room.hostId = alivePlayers[0].uid;
+              }
+              if (room.status === 'playing') {
+                const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid));
+                if (playersList[room.turnIndex]?.uid === user.uid) {
+                  room.turnIndex = getNextAlivePlayerIndex(playersList, room.turnIndex);
+                }
+              }
+              checkWinCondition(room);
+            }
+            io.to(user.roomId).emit('cc_state', room);
+          }
+        } 
+        // تنظيف Word War
+        else if (user.gameType === 'ww') {
+          let room = wwRooms[user.roomId];
+          if (room && room.players[user.uid]) {
+            delete room.players[user.uid];
+            const remainingUids = Object.keys(room.players);
+            if (remainingUids.length === 0) delete wwRooms[user.roomId];
+            else {
+              if (room.hostId === user.uid) room.hostId = remainingUids[0];
+              io.to(user.roomId).emit('ww_state', room);
+            }
+          }
+        }
+        // 🔥 تنظيف Biscuit Code 🔥
+        else if (user.gameType === 'bc') {
+          let room = bcRooms[user.roomId];
+          if (room && room.players[user.uid]) {
+            delete room.players[user.uid];
+            const remainingUids = Object.keys(room.players);
+            if (remainingUids.length === 0) delete bcRooms[user.roomId];
+            else {
+              if (room.hostId === user.uid) room.hostId = remainingUids[0];
+              io.to(user.roomId).emit('bc_state', room);
+            }
+          }
+        }
+
+        cleanupFirebaseRoom(user.roomId, user.uid);
+        delete disconnectTimers[user.uid];
+      }, 30000); 
+    }
+    delete socketUsers[socket.id]; 
+  });
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Game Hub Backend is running alive on http://localhost:${PORT}`);
+});
