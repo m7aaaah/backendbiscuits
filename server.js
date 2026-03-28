@@ -189,7 +189,7 @@ io.on('connection', (socket) => {
       if (disconnectTimers[uid]) { 
         clearTimeout(disconnectTimers[uid]); 
         delete disconnectTimers[uid]; 
-        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+        io.to(roomId).emit('player_online', { uid });
       }
     }
     if (roomStrokes[roomId]) socket.emit('load_board', roomStrokes[roomId]); 
@@ -207,7 +207,7 @@ io.on('connection', (socket) => {
       if (disconnectTimers[uid]) { 
         clearTimeout(disconnectTimers[uid]); 
         delete disconnectTimers[uid]; 
-        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+        io.to(roomId).emit('player_online', { uid }); 
       }
     }
     if (!wwRooms[roomId]) wwRooms[roomId] = { ...roomData, currentRound: 1, currentPrompt: '' }; 
@@ -241,7 +241,7 @@ io.on('connection', (socket) => {
         if (disconnectTimers[uid]) { 
           clearTimeout(disconnectTimers[uid]); 
           delete disconnectTimers[uid]; 
-          io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+          io.to(roomId).emit('player_online', { uid });
         }
     }
     if (!ccRooms[roomId]) {
@@ -297,7 +297,7 @@ io.on('connection', (socket) => {
       if (disconnectTimers[uid]) { 
         clearTimeout(disconnectTimers[uid]); 
         delete disconnectTimers[uid]; 
-        io.to(roomId).emit('player_online', { uid }); // إبلاغ اللوبي برجوع اللاعب
+        io.to(roomId).emit('player_online', { uid }); 
       }
     }
     
@@ -524,14 +524,31 @@ io.on('connection', (socket) => {
   });
 
   // ==========================================
-  // 🔴 معالجة فصل الاتصال (Disconnect Handling)
+  // 🔴 معالجة فصل الاتصال (Disconnect Handling & Host Migration)
   // ==========================================
   socket.on('disconnect', () => {
     console.log(`🔴 Player disconnected: ${socket.id}`);
     const user = socketUsers[socket.id];
     
     if (user) {
-      // إرسال إشعار للمتبقيين في الروم إن اللاعب فصل وبدء العداد التنازلي (30 ثانية)
+      // 🔥 نقل التاج فوراً لأول لاعب موجود لو الهوست هو اللي فصل 🔥
+      let roomToUpdate = null;
+      if (user.gameType === 'cc') roomToUpdate = ccRooms[user.roomId];
+      else if (user.gameType === 'ww') roomToUpdate = wwRooms[user.roomId];
+      else if (user.gameType === 'bc') roomToUpdate = bcRooms[user.roomId];
+
+      if (roomToUpdate && roomToUpdate.hostId === user.uid) {
+        const remainingPlayers = Object.keys(roomToUpdate.players).filter(id => id !== user.uid);
+        if (remainingPlayers.length > 0) {
+          roomToUpdate.hostId = remainingPlayers[0]; 
+          
+          if (user.gameType === 'cc') io.to(user.roomId).emit('cc_state', roomToUpdate);
+          else if (user.gameType === 'ww') io.to(user.roomId).emit('ww_state', roomToUpdate);
+          else if (user.gameType === 'bc') io.to(user.roomId).emit('bc_state', roomToUpdate);
+        }
+      }
+
+      // إرسال إشعار للمتبقيين في الروم وبدء العداد التنازلي
       io.to(user.roomId).emit('player_offline', { uid: user.uid, time: 30 });
 
       disconnectTimers[user.uid] = setTimeout(() => {
@@ -574,7 +591,7 @@ io.on('connection', (socket) => {
             }
           }
         }
-        // 🔥 تنظيف Biscuit Code 🔥
+        // تنظيف Biscuit Code
         else if (user.gameType === 'bc') {
           let room = bcRooms[user.roomId];
           if (room && room.players[user.uid]) {
