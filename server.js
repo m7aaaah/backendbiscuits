@@ -135,6 +135,7 @@ function checkWinCondition(room) {
   }
 }
 
+// 🔥 التعديل: تظبيط הـ Host Migration في الفايربيز 🔥
 async function cleanupFirebaseRoom(roomId, uid) {
   if (!db) {
     console.warn(`⚠️ Skipping Firebase cleanup for room ${roomId} (DB not initialized)`);
@@ -152,15 +153,23 @@ async function cleanupFirebaseRoom(roomId, uid) {
         delete players[uid];
       }
 
-      const remainingPlayers = Object.keys(players).length;
+      const remainingPlayers = Object.keys(players);
 
-      if (remainingPlayers === 0) {
+      if (remainingPlayers.length === 0) {
         await roomRef.delete();
         console.log(`🧹 [CLEANUP] Deleted empty ghost room from Firebase: ${roomId}`);
       } else {
-        await roomRef.update({
+        let updates = {
           [`players.${uid}`]: admin.firestore.FieldValue.delete()
-        });
+        };
+
+        if (roomData.hostId === uid) {
+          const newHostId = remainingPlayers[0];
+          updates['hostId'] = newHostId;
+          console.log(`👑 [HOST MIGRATION] Transferred host from ${uid} to ${newHostId} in room ${roomId}`);
+        }
+
+        await roomRef.update(updates);
         console.log(`🧹 [CLEANUP] Removed ghost player ${uid} from room ${roomId}`);
       }
     }
@@ -221,6 +230,20 @@ io.on('connection', (socket) => {
   socket.on('ww_judge_word', ({ roomId, targetUid, status }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { room.players[targetUid].wordStatus = status; room.players[targetUid].roundScore = (status === 'accepted') ? 1 : 0; io.to(roomId).emit('ww_state', room); } });
   socket.on('ww_next_round', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { Object.values(room.players).forEach(p => { p.score = (p.score || 0) + (p.roundScore || 0); }); if (room.currentRound >= room.totalRounds) { room.status = 'final-result'; } else { room.currentRound += 1; room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); } io.to(roomId).emit('ww_state', room); } });
   socket.on('ww_kick_player', ({ roomId, targetUid }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('ww_state', room); } });
+  
+  // 🔥 دالة "العب دور جديد" لـ Word War 🔥
+  socket.on('ww_play_again', (roomId) => {
+    let room = wwRooms[roomId];
+    if (room) {
+      room.status = 'lobby';
+      room.currentRound = 1;
+      Object.values(room.players).forEach(p => {
+        p.score = 0; p.roundScore = 0; p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending';
+      });
+      io.to(roomId).emit('ww_state', room);
+    }
+  });
+
   socket.on('ww_leave', ({ roomId, uid }) => {
     let room = wwRooms[roomId];
     if (room && room.players[uid]) {
@@ -260,6 +283,19 @@ io.on('connection', (socket) => {
   socket.on('cc_vote', ({ roomId, vote }) => { let room = ccRooms[roomId]; if (!room) return; room.votes[vote] += 1; const alivePlayersCount = Object.values(room.players).filter(p => p.strikes < 3).length; if (room.votes.yes + room.votes.no >= alivePlayersCount - 1) { const isRealWord = room.votes.yes > room.votes.no; room.status = 'round_end'; if (isRealWord) { room.players[room.challengerUid].strikes += 1; room.roundResult = { reason: 'vote_failed', word: room.declaredWord, message: 'الأغلبية صدقت المتهم!', victim: room.players[room.challengerUid].name }; } else { room.players[room.accusedUid].strikes += 1; room.roundResult = { reason: 'vote_success', word: room.declaredWord, message: 'الأغلبية كدبت المتهم!', victim: room.players[room.accusedUid].name }; } checkWinCondition(room); } io.to(roomId).emit('cc_state', room); });
   socket.on('cc_next_round', (roomId) => { let room = ccRooms[roomId]; if (room && room.status !== 'final-result') { room.status = 'playing'; room.currentWord = ''; room.lastLetter = ''; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); let victimIndex = playersList.findIndex(p => p.name === room.roundResult?.victim); if (victimIndex === -1 || playersList[victimIndex].strikes >= 3) { victimIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } room.turnIndex = victimIndex; io.to(roomId).emit('cc_state', room); } });
   socket.on('cc_kick_player', ({ roomId, targetUid }) => { let room = ccRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('cc_state', room); } });
+  
+  // 🔥 دالة "العب دور جديد" لـ Country Chain 🔥
+  socket.on('cc_play_again', (roomId) => {
+    let room = ccRooms[roomId];
+    if (room) {
+      room.status = 'lobby';
+      room.currentWord = ''; room.lastLetter = ''; room.turnIndex = 0;
+      room.winner = null; room.roundResult = null;
+      Object.values(room.players).forEach(p => p.strikes = 0);
+      io.to(roomId).emit('cc_state', room);
+    }
+  });
+
   socket.on('cc_leave', ({ roomId, uid }) => {
     let room = ccRooms[roomId];
     if (room && room.players[uid]) {
@@ -506,6 +542,23 @@ io.on('connection', (socket) => {
     let room = bcRooms[roomId];
     if (room && room.players[targetUid]) {
       delete room.players[targetUid];
+      io.to(roomId).emit('bc_state', room);
+    }
+  });
+
+  // 🔥 دالة "العب دور جديد" لـ Biscuit Code بالتعديل الجديد 🔥
+  socket.on('bc_play_again', (roomId) => {
+    let room = bcRooms[roomId];
+    if (room) {
+      room.status = 'lobby';
+      room.biscuitState = null;
+      
+      // مسح الفرق والأدوار عشان يرجعوا لـ "في الانتظار"
+      Object.values(room.players).forEach(p => {
+        delete p.team;
+        delete p.role;
+      });
+
       io.to(roomId).emit('bc_state', room);
     }
   });
