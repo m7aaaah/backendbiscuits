@@ -117,6 +117,23 @@ const BISCUIT_WORDS = [
   "باقة", "فلاشة", "ميموري", "كاميرا", "عدسة", "بطارية", "حجارة", "لعب", "كوتشينة", "دومينو"
 ];
 
+// 🔥 التعديل: أسئلة Word War تم نقلها للسيرفر 🔥
+const WW_PROMPTS = [
+  "أكلة بحرف الميم", "حاجة بنلبسها في الشتا", "اسم حيوان بيطير", 
+  "ماركة عربيات مشهورة", "دولة أوروبية", "حاجة موجودة في المطبخ",
+  "اسم فيلم مصري كوميدي", "حاجة بتتباع في السوبر ماركت", "مهنة بحرف النون",
+  "حاجة بتعملها أول ما تصحى من النوم", "كلمة سر مصرية شهيرة",
+  "أكلة شعبية مصرية", "حاجة بتخاف منها", "اسم مسلسل رمضاني قديم",
+  "حاجة بتلاقيها في جيبك دايماً", "أكتر حاجة بتضيع منك", "مكان تتمنى تسافره",
+  "حاجة بتشتريها من الكشك", "اسم فاكهة بحرف الباء", "حاجة بتستخدمها في الحمام",
+  "كلمة بتطنش بيها حد بيكلمك", "لون من ألوان الطيف", "حاجة بتتعمل في الأفراح المصرية",
+  "شخصية كرتونية مشهورة", "لعبة كنا بنلعبها وإحنا صغيرين", "عذر مصري أصيل للتأخير",
+  "حاجة مستحيل تستغنى عنها في يومك", "أكلة بتتاكل في العيد", "حاجة بنشوفها في الشارع المصري كتير"
+];
+
+const getRandomWWPrompt = () => WW_PROMPTS[Math.floor(Math.random() * WW_PROMPTS.length)];
+
+
 function getNextAlivePlayerIndex(playersList, currentIndex) {
   let nextIndex = (currentIndex + 1) % playersList.length;
   let loops = 0;
@@ -135,7 +152,7 @@ function checkWinCondition(room) {
   }
 }
 
-// 🔥 التعديل: تظبيط הـ Host Migration في الفايربيز 🔥
+// 🔥 Host Migration في الفايربيز 🔥
 async function cleanupFirebaseRoom(roomId, uid) {
   if (!db) {
     console.warn(`⚠️ Skipping Firebase cleanup for room ${roomId} (DB not initialized)`);
@@ -224,11 +241,55 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('ww_state', wwRooms[roomId]); 
   });
   
-  socket.on('ww_start', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); io.to(roomId).emit('ww_state', room); } });
-  socket.on('ww_submit', ({ roomId, uid, word }) => { let room = wwRooms[roomId]; if (room && room.players[uid]) { room.players[uid].currentWord = word; room.players[uid].isReady = true; const players = Object.values(room.players); if (players.every(p => p.isReady) && players.length > 1) room.status = 'clash'; io.to(roomId).emit('ww_state', room); } });
+  // 👇 السيرفر يختار السؤال عند البداية 👇
+  socket.on('ww_start', ({ roomId }) => { 
+    let room = wwRooms[roomId]; 
+    if (room) { 
+      room.status = 'writing'; 
+      room.currentPrompt = getRandomWWPrompt(); 
+      Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); 
+      io.to(roomId).emit('ww_state', room); 
+    } 
+  });
+
+  socket.on('ww_submit', ({ roomId, uid, word }) => {
+    let room = wwRooms[roomId];
+    if (room && room.players[uid]) {
+      room.players[uid].currentWord = word;
+      room.players[uid].isReady = true;
+      
+      const players = Object.values(room.players);
+      const isEveryoneReady = players.every(p => p.isReady) && players.length > 1;
+
+      if (isEveryoneReady) {
+        room.status = 'clash';
+        io.to(roomId).emit('ww_state', room);
+      } else {
+        io.to(roomId).emit('ww_player_ready', { uid });
+      }
+    }
+  });
+
   socket.on('ww_time_up', (roomId) => { let room = wwRooms[roomId]; if (room && room.status === 'writing') { room.status = 'clash'; io.to(roomId).emit('ww_state', room); } });
   socket.on('ww_judge_word', ({ roomId, targetUid, status }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { room.players[targetUid].wordStatus = status; room.players[targetUid].roundScore = (status === 'accepted') ? 1 : 0; io.to(roomId).emit('ww_state', room); } });
-  socket.on('ww_next_round', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { Object.values(room.players).forEach(p => { p.score = (p.score || 0) + (p.roundScore || 0); }); if (room.currentRound >= room.totalRounds) { room.status = 'final-result'; } else { room.currentRound += 1; room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); } io.to(roomId).emit('ww_state', room); } });
+  
+  // 👇 السيرفر يختار سؤال جديد للجولة الجديدة 👇
+  socket.on('ww_next_round', ({ roomId }) => { 
+    let room = wwRooms[roomId]; 
+    if (room) { 
+      Object.values(room.players).forEach(p => { p.score = (p.score || 0) + (p.roundScore || 0); }); 
+      if (room.currentRound >= room.totalRounds) { 
+        room.status = 'final-result'; 
+      } else { 
+        room.currentRound += 1; 
+        room.status = 'writing'; 
+        room.currentPrompt = getRandomWWPrompt(); 
+        Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); 
+      } 
+      io.to(roomId).emit('ww_state', room); 
+    } 
+  });
+
   socket.on('ww_kick_player', ({ roomId, targetUid }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('ww_state', room); } });
   
   socket.on('ww_play_again', (roomId) => {
