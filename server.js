@@ -231,7 +231,6 @@ io.on('connection', (socket) => {
   socket.on('ww_next_round', ({ roomId, prompt }) => { let room = wwRooms[roomId]; if (room) { Object.values(room.players).forEach(p => { p.score = (p.score || 0) + (p.roundScore || 0); }); if (room.currentRound >= room.totalRounds) { room.status = 'final-result'; } else { room.currentRound += 1; room.status = 'writing'; room.currentPrompt = prompt; Object.values(room.players).forEach(p => { p.isReady = false; p.currentWord = ''; p.wordStatus = 'pending'; p.roundScore = 0; }); } io.to(roomId).emit('ww_state', room); } });
   socket.on('ww_kick_player', ({ roomId, targetUid }) => { let room = wwRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('ww_state', room); } });
   
-  // 🔥 دالة "العب دور جديد" لـ Word War 🔥
   socket.on('ww_play_again', (roomId) => {
     let room = wwRooms[roomId];
     if (room) {
@@ -284,7 +283,6 @@ io.on('connection', (socket) => {
   socket.on('cc_next_round', (roomId) => { let room = ccRooms[roomId]; if (room && room.status !== 'final-result') { room.status = 'playing'; room.currentWord = ''; room.lastLetter = ''; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); let victimIndex = playersList.findIndex(p => p.name === room.roundResult?.victim); if (victimIndex === -1 || playersList[victimIndex].strikes >= 3) { victimIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } room.turnIndex = victimIndex; io.to(roomId).emit('cc_state', room); } });
   socket.on('cc_kick_player', ({ roomId, targetUid }) => { let room = ccRooms[roomId]; if (room && room.players[targetUid]) { delete room.players[targetUid]; io.to(roomId).emit('cc_state', room); } });
   
-  // 🔥 دالة "العب دور جديد" لـ Country Chain 🔥
   socket.on('cc_play_again', (roomId) => {
     let room = ccRooms[roomId];
     if (room) {
@@ -469,8 +467,12 @@ io.on('connection', (socket) => {
     const isTeamA = state.teamA.includes(uid);
     const isTeamB = state.teamB.includes(uid);
     
-    if ((uid === state.chefA && state.teamA.length > 1) || 
-        (uid === state.chefB && state.teamB.length > 1)) return; 
+    // 🔥 الحماية المنيعة: لو إنت شيف ومعاك أي شخص في الفريق، متقدرش تخمن 🔥
+    const teamA_Count = state.teamA.length;
+    const teamB_Count = state.teamB.length;
+
+    if (uid === state.chefA && teamA_Count > 1) return;
+    if (uid === state.chefB && teamB_Count > 1) return;
 
     if (state.currentTurn === 'teamA' && !isTeamA) return;
     if (state.currentTurn === 'teamB' && !isTeamB) return;
@@ -526,8 +528,12 @@ io.on('connection', (socket) => {
     if (!room || !room.biscuitState) return;
     const state = room.biscuitState;
     
-    if ((uid === state.chefA && state.teamA.length > 1) || 
-        (uid === state.chefB && state.teamB.length > 1)) return;
+    // 🔥 الحماية المنيعة هنا كمان 🔥
+    const teamA_Count = state.teamA.length;
+    const teamB_Count = state.teamB.length;
+
+    if (uid === state.chefA && teamA_Count > 1) return;
+    if (uid === state.chefB && teamB_Count > 1) return;
 
     if (state.currentTurn === 'teamA' && !state.teamA.includes(uid)) return;
     if (state.currentTurn === 'teamB' && !state.teamB.includes(uid)) return;
@@ -546,14 +552,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 🔥 دالة "العب دور جديد" لـ Biscuit Code بالتعديل الجديد 🔥
   socket.on('bc_play_again', (roomId) => {
     let room = bcRooms[roomId];
     if (room) {
       room.status = 'lobby';
       room.biscuitState = null;
       
-      // مسح الفرق والأدوار عشان يرجعوا لـ "في الانتظار"
       Object.values(room.players).forEach(p => {
         delete p.team;
         delete p.role;
@@ -584,7 +588,6 @@ io.on('connection', (socket) => {
     const user = socketUsers[socket.id];
     
     if (user) {
-      // 🔥 نقل التاج فوراً لأول لاعب موجود لو الهوست هو اللي فصل 🔥
       let roomToUpdate = null;
       if (user.gameType === 'cc') roomToUpdate = ccRooms[user.roomId];
       else if (user.gameType === 'ww') roomToUpdate = wwRooms[user.roomId];
@@ -601,11 +604,9 @@ io.on('connection', (socket) => {
         }
       }
 
-      // إرسال إشعار للمتبقيين في الروم وبدء العداد التنازلي
       io.to(user.roomId).emit('player_offline', { uid: user.uid, time: 30 });
 
       disconnectTimers[user.uid] = setTimeout(() => {
-        // تنظيف Country Chain
         if (user.gameType === 'cc') {
           let room = ccRooms[user.roomId];
           if (room && room.players[user.uid]) {
@@ -631,7 +632,6 @@ io.on('connection', (socket) => {
             io.to(user.roomId).emit('cc_state', room);
           }
         } 
-        // تنظيف Word War
         else if (user.gameType === 'ww') {
           let room = wwRooms[user.roomId];
           if (room && room.players[user.uid]) {
@@ -644,7 +644,6 @@ io.on('connection', (socket) => {
             }
           }
         }
-        // تنظيف Biscuit Code
         else if (user.gameType === 'bc') {
           let room = bcRooms[user.roomId];
           if (room && room.players[user.uid]) {
