@@ -133,7 +133,53 @@ const WW_PROMPTS = [
 
 const getRandomWWPrompt = () => WW_PROMPTS[Math.floor(Math.random() * WW_PROMPTS.length)];
 
+// 🛑 4. نظام الحماية وفلتر الكلمات المسيئة (Profanity Filter) 🛑
+// تقدر تزود الكلمات اللي إنت عايزها هنا
+const BAD_WORDS = [
+  // 🔴 الشتائم العربية والمصرية 🔴
+  "شرموط", "شرموطة", "متناك", "متناكة", "خول", "علق", "عرص", "معرص", "وسخ", "وسخة", "لبوة", 
+  "قحبة", "مومس", "عاهرة", "زاني", "زانية", "زنا", "شاذ", "ديوث", "مأبون", "ابن الكلب",
+  "كس", "كسم", "كسمك", "كسك", "كئئئم", "كسمين", "كاسام",
+  "زب", "زبي", "زبر", "زبرك", "بز", "بزاز", "بزازك", "طيز", "طيزك",
+  "نيك", "نيكة", "منيوك", "منيوكة", "هنيكك", "بيتناك", "بعبص", "بعبصة", "مزه", "مزة",
+  
+  // 🔴 تعبيرات واختصارات دارجة 🔴
+  "احا", "اححا", "أحا", "خخخ", "خخ", "خخخخ", "خخخخخ", "تف"،
+  
+  // 🔴 الفرانكو (Franco) 🔴
+  "kos", "ksm", "ksmk", "kosom", "kosomak", "kosmk", "kosem", 
+  "a7a", "a77a", "ah7a", "aha",
+  "5wl", "5wal", "5awal", "khawal", 
+  "3ars", "m3rs", "me3rs", "m3ras", "ars",
+  "sharmout", "sharmouta", "sharmuta",
+  "metnak", "mtnak", "metnaka", "mtnaka",
+  "zeb", "zeby", "zib", "ziby", 
+  "nyak", "nayak", "manyouk", "mnywk",
 
+  // 🔴 الشتائم الإنجليزية 🔴
+  "fuck", "fucking", "fucker", "motherfucker", "mf", "stfu",
+  "bitch", "bitches", "whore", "slut", "hoe", "cunt", 
+  "dick", "cock", "pussy", "vagina", "boobs", "tits", 
+  "ass", "asshole", "dumbass", "bastard", 
+  "shit", "bullshit", "crap",
+  "faggot", "fag", "dyke", 
+  "nigger", "nigga", "nigg",
+  "porn", "sex", "nude", "nudes"
+];
+function sanitizeText(text) {
+  if (!text) return text;
+  let sanitized = text;
+  
+  BAD_WORDS.forEach(word => {
+    // السطر ده بيحول الكلمة لـ Regex بيصطاد تكرار الحروف
+    // يعني لو الكلمة "احا" هيصطاد "احححا" و "اححححححححا"
+    const regexPattern = word.split('').join('+') + '+';
+    const regex = new RegExp(regexPattern, "gi"); 
+    sanitized = sanitized.replace(regex, "***");
+  });
+  
+  return sanitized;
+}
 function getNextAlivePlayerIndex(playersList, currentIndex) {
   let nextIndex = (currentIndex + 1) % playersList.length;
   let loops = 0;
@@ -198,11 +244,38 @@ async function cleanupFirebaseRoom(roomId, uid) {
 io.on('connection', (socket) => {
   console.log(`🟢 Player connected: ${socket.id}`);
 
-  // ==========================================
+// ==========================================
   // 🤡 نظام التحفيل والرياكشنات (Global Reactions)
   // ==========================================
   socket.on('send_reaction', ({ roomId, emoji }) => {
-    io.to(roomId).emit('receive_reaction', { emoji, uid: socket.id });
+    // 🔥 نجيب الـ UID الحقيقي بتاع اللاعب من السيرفر بدل الـ Socket ID 🔥
+    const user = socketUsers[socket.id];
+    const realUid = user ? user.uid : socket.id;
+    
+    io.to(roomId).emit('receive_reaction', { emoji, uid: realUid });
+  });
+  // ==========================================
+  // 🚩 نظام الإبلاغ عن اللاعبين (Reporting System) 🚩
+  // ==========================================
+  socket.on('report_user', async ({ roomId, reportedUid, reporterUid, reportedName, reason }) => {
+    console.log(`🚩 [REPORT] User ${reporterUid} reported ${reportedName} (${reportedUid}) in room ${roomId}. Reason: ${reason}`);
+    
+    // تسجيل البلاغ في قاعدة بيانات فايربيز للإثبات أمام جوجل بلاي
+    if (db) {
+      try {
+        await db.collection('reports').add({
+          roomId,
+          reportedUid,
+          reporterUid,
+          reportedName,
+          reason: reason || 'Inappropriate behavior/content',
+          timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`✅ [REPORT] Saved to Firebase successfully.`);
+      } catch (err) {
+        console.error(`❌ [REPORT] Failed to save to Firebase:`, err);
+      }
+    }
   });
 
   // ==========================================
@@ -255,7 +328,8 @@ io.on('connection', (socket) => {
   socket.on('ww_submit', ({ roomId, uid, word }) => {
     let room = wwRooms[roomId];
     if (room && room.players[uid]) {
-      room.players[uid].currentWord = word;
+      // 🛡️ تطبيق الفلتر على الكلمة المدخلة 🛡️
+      room.players[uid].currentWord = sanitizeText(word);
       room.players[uid].isReady = true;
       
       const players = Object.values(room.players);
@@ -338,7 +412,17 @@ io.on('connection', (socket) => {
   socket.on('cc_submit_letter', ({ roomId, uid, letter }) => { let room = ccRooms[roomId]; if (!room || room.status !== 'playing') return; room.currentWord += letter; room.lastLetter = letter; room.lastPlayerUid = uid; if (countriesDB.includes(room.currentWord)) { room.status = 'round_end'; room.roundResult = { reason: 'completed', word: room.currentWord, message: `تم تجميع كلمة (${room.currentWord})!` }; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); const nextIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); const trappedPlayer = playersList[nextIndex]; trappedPlayer.strikes += 1; room.roundResult.victim = trappedPlayer.name; checkWinCondition(room); } else { const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); room.turnIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } io.to(roomId).emit('cc_state', room); });
   socket.on('cc_timeout', ({ roomId, currentUid }) => { let room = ccRooms[roomId]; if (!room || room.status !== 'playing') return; if (room.players[currentUid]) { room.players[currentUid].strikes += 1; room.status = 'round_end'; room.roundResult = { reason: 'timeout', word: room.currentWord || 'مفيش', message: 'الوقت خلص!', victim: room.players[currentUid].name }; checkWinCondition(room); io.to(roomId).emit('cc_state', room); } });
   socket.on('cc_challenge', ({ roomId, challengerUid }) => { let room = ccRooms[roomId]; if (!room) return; room.status = 'challenged'; room.challengerUid = challengerUid; room.accusedUid = room.lastPlayerUid; io.to(roomId).emit('cc_state', room); });
-  socket.on('cc_declare_word', ({ roomId, declaredWord }) => { let room = ccRooms[roomId]; if (!room) return; room.declaredWord = declaredWord; if (room.hostId === room.accusedUid) { room.status = 'voting'; room.votes = { yes: 0, no: 0 }; } else { room.status = 'judging'; } io.to(roomId).emit('cc_state', room); });
+  
+  socket.on('cc_declare_word', ({ roomId, declaredWord }) => { 
+    let room = ccRooms[roomId]; 
+    if (!room) return; 
+    // 🛡️ تطبيق الفلتر على الكلمة المدخلة 🛡️
+    room.declaredWord = sanitizeText(declaredWord); 
+    if (room.hostId === room.accusedUid) { room.status = 'voting'; room.votes = { yes: 0, no: 0 }; } 
+    else { room.status = 'judging'; } 
+    io.to(roomId).emit('cc_state', room); 
+  });
+
   socket.on('cc_judge', ({ roomId, isRealWord }) => { let room = ccRooms[roomId]; if (!room) return; room.status = 'round_end'; if (isRealWord) { room.players[room.challengerUid].strikes += 1; room.roundResult = { reason: 'challenge_failed', word: room.declaredWord, message: 'الكلمة طلعت بجد!', victim: room.players[room.challengerUid].name }; } else { room.players[room.accusedUid].strikes += 1; room.roundResult = { reason: 'challenge_success', word: room.declaredWord, message: 'المتهم كان بيهبد!', victim: room.players[room.accusedUid].name }; } checkWinCondition(room); io.to(roomId).emit('cc_state', room); });
   socket.on('cc_vote', ({ roomId, vote }) => { let room = ccRooms[roomId]; if (!room) return; room.votes[vote] += 1; const alivePlayersCount = Object.values(room.players).filter(p => p.strikes < 3).length; if (room.votes.yes + room.votes.no >= alivePlayersCount - 1) { const isRealWord = room.votes.yes > room.votes.no; room.status = 'round_end'; if (isRealWord) { room.players[room.challengerUid].strikes += 1; room.roundResult = { reason: 'vote_failed', word: room.declaredWord, message: 'الأغلبية صدقت المتهم!', victim: room.players[room.challengerUid].name }; } else { room.players[room.accusedUid].strikes += 1; room.roundResult = { reason: 'vote_success', word: room.declaredWord, message: 'الأغلبية كدبت المتهم!', victim: room.players[room.accusedUid].name }; } checkWinCondition(room); } io.to(roomId).emit('cc_state', room); });
   socket.on('cc_next_round', (roomId) => { let room = ccRooms[roomId]; if (room && room.status !== 'final-result') { room.status = 'playing'; room.currentWord = ''; room.lastLetter = ''; const playersList = Object.values(room.players).sort((a, b) => a.uid.localeCompare(b.uid)); let victimIndex = playersList.findIndex(p => p.name === room.roundResult?.victim); if (victimIndex === -1 || playersList[victimIndex].strikes >= 3) { victimIndex = getNextAlivePlayerIndex(playersList, room.turnIndex); } room.turnIndex = victimIndex; io.to(roomId).emit('cc_state', room); } });
@@ -508,7 +592,8 @@ io.on('connection', (socket) => {
     const state = room.biscuitState;
     if ((state.currentTurn === 'teamA' && uid === state.chefA) || 
         (state.currentTurn === 'teamB' && uid === state.chefB)) {
-      state.activeClue = { word, count };
+      // 🛡️ تطبيق الفلتر على التلميح المدخل 🛡️
+      state.activeClue = { word: sanitizeText(word), count };
       state.guessesLeft = count + 1;
       io.to(roomId).emit('bc_state', room);
     }
@@ -528,7 +613,7 @@ io.on('connection', (socket) => {
     const isTeamA = state.teamA.includes(uid);
     const isTeamB = state.teamB.includes(uid);
     
-    // 🔥 الحماية المنيعة: لو إنت شيف ومعاك أي شخص في الفريق، متقدرش تخمن 🔥
+    // 🔥 الحماية ضد تخمين الشيف 🔥
     const teamA_Count = state.teamA.length;
     const teamB_Count = state.teamB.length;
 
@@ -589,7 +674,7 @@ io.on('connection', (socket) => {
     if (!room || !room.biscuitState) return;
     const state = room.biscuitState;
     
-    // 🔥 الحماية المنيعة هنا كمان 🔥
+    // 🔥 الحماية ضد إنهاء الدور من قبل الشيف 🔥
     const teamA_Count = state.teamA.length;
     const teamB_Count = state.teamB.length;
 
